@@ -1,3 +1,5 @@
+import hmac
+import os
 import uuid
 
 import streamlit as st
@@ -17,7 +19,28 @@ NODE_LABELS = {
     "evaluate_output_node": "Checked the total against your budget",
 }
 
+MAX_PLANS_PER_SESSION = 3
+LIMIT_MESSAGE = (
+    f"You've reached the limit of {MAX_PLANS_PER_SESSION} plans for this session. "
+    "Please come back later."
+)
+
 st.set_page_config(page_title="Travel Concierge", page_icon="✈️", layout="centered")
+
+# Optional access code: set APP_ACCESS_CODE in the environment to keep a public deployment
+# from spending the model quota on strangers. Unset it for local use.
+ACCESS_CODE = os.getenv("APP_ACCESS_CODE")
+if ACCESS_CODE and not st.session_state.get("authorized"):
+    st.title("✈️ Travel Concierge")
+    with st.form("access"):
+        code = st.text_input("Access code", type="password")
+        entered = st.form_submit_button("Enter")
+    if entered:
+        if hmac.compare_digest(code.encode(), ACCESS_CODE.encode()):
+            st.session_state.authorized = True
+            st.rerun()
+        st.error("That access code isn't right.")
+    st.stop()
 
 
 def start_over():
@@ -25,6 +48,7 @@ def start_over():
     st.session_state.messages = [{"role": "assistant", "content": GREETING}]
     st.session_state.intake = new_session()
     st.session_state.pop("config", None)
+    # plans_used is deliberately kept across "start over" so the limit can't be reset by it
 
 
 def run_graph(graph_input, config, status):
@@ -86,7 +110,13 @@ if phase == "chat":
             st.session_state.phase = "planning"
         st.rerun()
 
+elif phase == "planning" and st.session_state.get("plans_used", 0) >= MAX_PLANS_PER_SESSION:
+    st.session_state.messages.append({"role": "assistant", "content": LIMIT_MESSAGE})
+    st.session_state.phase = "limit"
+    st.rerun()
+
 elif phase == "planning":
+    st.session_state.plans_used = st.session_state.get("plans_used", 0) + 1
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     st.session_state.config = config
     state = build_initial_state(**trip_inputs(st.session_state.intake["request"]))
@@ -112,6 +142,10 @@ elif phase == "review":
         st.session_state.phase = "approved"
         st.rerun()
     if more_col.button("Search for another option", use_container_width=True):
+        if st.session_state.get("plans_used", 0) >= MAX_PLANS_PER_SESSION:
+            st.warning(LIMIT_MESSAGE)
+            st.stop()
+        st.session_state.plans_used = st.session_state.get("plans_used", 0) + 1
         workflow.update_state(config, search_more_update(values), as_node="evaluate_output_node")
         with st.status("Looking for an alternative...", expanded=True) as status:
             st.session_state.phase = run_until_review(None, config, status)

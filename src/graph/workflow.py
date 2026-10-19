@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import tempfile
 
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -13,8 +14,13 @@ from src.tools.travel_mcp import LAST_SOURCES
 MAX_ATTEMPTS = 3
 
 # Kept outside Desktop: iCloud-synced folders can cause SQLite "disk I/O error".
-CHECKPOINT_DIR = os.path.expanduser("~/.travel-agent")
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+# Falls back to the system temp folder where the home directory is not writable (hosting).
+try:
+    CHECKPOINT_DIR = os.path.expanduser("~/.travel-agent")
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+except OSError:
+    CHECKPOINT_DIR = os.path.join(tempfile.gettempdir(), "travel-agent")
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 CHECKPOINT_DB_PATH = os.path.join(CHECKPOINT_DIR, "checkpoints.sqlite")
 
 
