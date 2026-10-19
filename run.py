@@ -2,6 +2,7 @@ import uuid
 from datetime import date, datetime
 
 from src.graph.workflow import workflow as app
+from src.session import build_initial_state
 
 
 def run_graph(graph_input, config):
@@ -90,25 +91,17 @@ def ask_trip_constraints() -> dict:
             break
         print()
 
-    return {
-        "origin": origin,
-        "destination": destination,
-        "travel_month": departure.strftime("%B"),
-        "departure_date": departure.isoformat(),
-        "nights": nights,
-        "adults": adults,
-        "trip_style": trip_style,
-        "comfort_level": comfort,
-        "max_stops": STOP_CHOICES[stops],
-        "max_budget": max_budget,
-        "raw_flight_options": None,
-        "raw_hotel_options": None,
-        "compiled_itinerary": None,
-        "eval_feedback": None,
-        "attempts": 0,
-        "user_decision": "",
-        "blacklisted_packages": [],
-    }
+    return build_initial_state(
+        origin=origin,
+        destination=destination,
+        departure=departure,
+        nights=nights,
+        adults=adults,
+        max_budget=max_budget,
+        trip_style=trip_style,
+        comfort_level=comfort,
+        max_stops=STOP_CHOICES[stops],
+    )
 
 
 if __name__ == "__main__":

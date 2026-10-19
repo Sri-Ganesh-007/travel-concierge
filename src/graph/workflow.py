@@ -59,6 +59,11 @@ def call_agents_crew_node(state: TravelState) -> dict:
         style=state["trip_style"],
         comfort=state["comfort_level"],
         max_stops=state["max_stops"],
+        services=state["services"],
+        trip_type=state["trip_type"],
+        return_date=state["return_date"],
+        children_ages=state["children_ages"],
+        infants=state["infants"],
         feedback=state.get("eval_feedback") or "",
     )
     return {
@@ -68,9 +73,12 @@ def call_agents_crew_node(state: TravelState) -> dict:
 
 
 def evaluate_output_node(state: TravelState) -> dict:
-    result = ItineraryEvaluator.evaluate_budget(
-        state["compiled_itinerary"], state["max_budget"]
-    )
+    if state["max_budget"] is None:
+        result = {"success": True, "feedback": None}  # the traveler set no budget limit
+    else:
+        result = ItineraryEvaluator.evaluate_budget(
+            state["compiled_itinerary"], state["max_budget"]
+        )
     if not result["success"]:
         if state.get("attempts", 0) >= MAX_ATTEMPTS:
             notice = (

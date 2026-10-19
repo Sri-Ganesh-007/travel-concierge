@@ -17,7 +17,9 @@ groq_llm = LLM(
 
 IATA_RULE = (
     "You MUST convert full city names into official 3-letter IATA airport codes "
-    "(e.g., 'Paris' to 'CDG', 'Bengaluru' to 'BLR') before executing tool calls."
+    "(e.g., 'Paris' to 'CDG', 'Bengaluru' to 'BLR') before executing tool calls. If the "
+    "place has no airport of its own, use the nearest real airport (e.g., 'Amalapuram' to "
+    "Rajahmundry 'RJA') and mention that in your report. Never invent a code."
 )
 
 HOTEL_CITY_RULE = (
@@ -86,11 +88,15 @@ destination_advisor_agent = Agent(
 
 flight_search_task = Task(
     description=(
-        "Discover flight paths from {origin} to {destination} departing {departure_date} "
-        "(month: {month}) for {adults} adult(s). The total trip budget is {budget}. "
-        "Maximum stops the traveler accepts: {max_stops} (-1 means any). Call the flight "
-        "tool with departure_date {departure_date}, adults and max_stops, and report the "
-        "most promising options with prices. " + IATA_RULE
+        "Services requested: {services}. If that is 'hotel only', do NOT call the flight tool; "
+        "simply report that no flight was requested. Otherwise, "
+        "discover {trip_type} flight paths from {origin} to {destination} departing "
+        "{departure_date} (return date: {return_date}) for {adults} adult(s), {children} "
+        "child(ren) and {infants} infant(s). The total trip budget for the whole group is "
+        "{budget}. Maximum stops the traveler accepts: {max_stops} (-1 means any). Call the "
+        "flight tool with departure_date {departure_date}, return_date {return_date} (leave it "
+        "empty for one-way), adults, children, infants and max_stops, and report the most "
+        "promising options with prices (prices are totals for the whole group). " + IATA_RULE
     ),
     expected_output="A concise list of flight options with route, price, and duration.",
     agent=flight_scout_agent,
@@ -98,12 +104,16 @@ flight_search_task = Task(
 
 hotel_search_task = Task(
     description=(
-        "Using the flight options from the previous task, find hotels in {destination} "
+        "Services requested: {services}. If that is 'flights only', do NOT call the hotel "
+        "tool; simply report that no hotel was requested. Otherwise, using the flight options "
+        "from the previous task (if any), find hotels in {destination} "
         "for a stay of {nights} nights so that flight plus hotel cost can stay under the "
         "budget of {budget}. The traveler's comfort level is '{comfort}' (budget = any star "
         "rating, mid-range = at least 3 stars, luxury = at least 4 stars) and the trip style "
         "is '{style}'. Call the hotel tool with checkin_date {departure_date}, nights, "
-        "price_ceiling (the budget remaining after the flight), adults ({adults}) and "
+        "price_ceiling (the budget remaining after the flight, or 10000000 if the budget is "
+        "'no limit'), adults ({adults}), "
+        "children_ages ('{children_ages}', dash-separated; empty if no children) and "
         "min_stars, and report the best options with total stay prices. " + HOTEL_CITY_RULE +
         " Feedback from a previous failed attempt, if any: {feedback}"
     ),
@@ -133,8 +143,11 @@ compliance_verification_task = Task(
         "Review the flight array from task 1 and hotel options from task 2. "
         "Verify that the total cost does not cross max_budget ({budget}) and that "
         "the hotel is in the destination city ({destination}). The trip is "
-        "{nights} nights for {adults} adult(s) departing {departure_date}; mention these "
-        "details in the itinerary. "
+        "{nights} nights ({trip_type}) for {adults} adult(s), {children} child(ren) and "
+        "{infants} infant(s) departing {departure_date}; mention these details in the "
+        "itinerary. The traveler asked for: {services}. Include only what was requested; "
+        "the total is the sum of the requested items for the whole group. If the budget is "
+        "'no limit', skip the budget comparison but still print the Total Cost line. "
         "Output a beautifully formatted final markdown itinerary that also includes "
         "the destination suitability assessment from task 3 as its own section, "
         "keeping its weather-data attribution. "
@@ -154,7 +167,7 @@ compliance_verification_task = Task(
 def run_travel_crew(
     origin: str,
     destination: str,
-    budget: float,
+    budget,
     month: str,
     departure_date: str,
     nights: int,
@@ -162,8 +175,14 @@ def run_travel_crew(
     style: str,
     comfort: str,
     max_stops: int,
+    services: str = "both",
+    trip_type: str = "round_trip",
+    return_date: str = "",
+    children_ages: list = None,
+    infants: int = 0,
     feedback: str = "",
 ) -> str:
+    children_ages = children_ages or []
     crew = Crew(
         agents=[
             flight_scout_agent,
@@ -184,7 +203,12 @@ def run_travel_crew(
         inputs={
             "origin": origin,
             "destination": destination,
-            "budget": budget,
+            "budget": "no limit" if budget is None else budget,
+            "services": {
+                "flight_only": "flights only",
+                "hotel_only": "hotel only",
+                "both": "flights and hotel",
+            }.get(services, "flights and hotel"),
             "month": month,
             "departure_date": departure_date,
             "nights": nights,
@@ -192,6 +216,11 @@ def run_travel_crew(
             "style": style,
             "comfort": comfort,
             "max_stops": max_stops,
+            "trip_type": "round-trip" if trip_type == "round_trip" else "one-way",
+            "return_date": return_date or "none (one-way)",
+            "children": len(children_ages),
+            "children_ages": "-".join(str(age) for age in children_ages),
+            "infants": infants,
             "feedback": feedback or "none",
         }
     )

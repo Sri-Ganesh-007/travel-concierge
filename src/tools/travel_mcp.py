@@ -58,7 +58,7 @@ def _parse_price(text: str) -> float:
     return float(re.sub(r"[^\d.]", "", text))
 
 
-def _mock_flights(origin: str, destination: str, adults: int, max_stops: int) -> list:
+def _mock_flights(travelers: int, max_stops: int, round_trip: bool) -> list:
     per_adult_offers = [
         {"offer_id": "MOCK-1", "carrier_code": "AF", "duration": "PT7H45M",
          "stops": 0, "price_per_adult": 52400.00},
@@ -67,8 +67,10 @@ def _mock_flights(origin: str, destination: str, adults: int, max_stops: int) ->
         {"offer_id": "MOCK-3", "carrier_code": "BA", "duration": "PT9H05M",
          "stops": 1, "price_per_adult": 44750.00},
     ]
+    legs = 2 if round_trip else 1
     return [
-        {**offer, "adults": adults, "price": offer["price_per_adult"] * adults, "currency": CURRENCY}
+        {**offer, "travelers": travelers, "price": offer["price_per_adult"] * travelers * legs,
+         "currency": CURRENCY}
         for offer in per_adult_offers
         if max_stops < 0 or offer["stops"] <= max_stops
     ]
@@ -92,12 +94,20 @@ def _mock_hotels(nights: int, min_stars: int) -> list:
 
 @tool("fetch_flight_offers")
 def fetch_flight_offers(
-    origin: str, destination: str, departure_date: str, adults: int = 1, max_stops: int = -1
+    origin: str,
+    destination: str,
+    departure_date: str,
+    return_date: str = "",
+    adults: int = 1,
+    children: int = 0,
+    infants: int = 0,
+    max_stops: int = -1,
 ) -> str:
-    """Search one-way flights between two cities on a given date (YYYY-MM-DD).
+    """Search flights between two cities, one-way or round trip. Dates are YYYY-MM-DD.
     Use 3-letter IATA airport or city codes for origin and destination (e.g. DEL, TYO).
-    adults is the number of travelers; each offer's price is the total for all of them.
-    max_stops limits the number of stops (-1 means any).
+    Leave return_date empty for a one-way search. adults, children (2-11) and infants (under 2)
+    describe the group; each offer's price is the total for the whole group (all legs).
+    max_stops limits the number of stops per leg (-1 means any).
     Returns a JSON string with the cheapest flight offers including price, carrier and duration."""
     try:
         day = date.fromisoformat(departure_date.strip())
@@ -107,8 +117,13 @@ def fetch_flight_offers(
             "departureDate": day.strftime("%d/%m/%Y"),
             "currency": CURRENCY,
             "adults": adults,
+            "children": children,
+            "infants": infants,
             "sort": "price",
         }
+        return_day = date.fromisoformat(return_date.strip()) if return_date.strip() else None
+        if return_day:
+            arguments["returnDate"] = return_day.strftime("%d/%m/%Y")
         if max_stops >= 0:
             arguments["max_sector_stopovers"] = max_stops
         response = json.loads(_call_mcp_tool(KIWI_URL, "search-flight", arguments, FLIGHT_TIMEOUT))
@@ -120,7 +135,7 @@ def fetch_flight_offers(
             outbound = itinerary["outbound"]
             first_segment = outbound["segments"][0]
             minutes = outbound["durationSeconds"] // 60
-            offers.append({
+            offer = {
                 "offer_id": itinerary["id"],
                 "carrier_code": first_segment["carrier"],
                 "carrier_name": first_segment["carrierName"],
@@ -129,7 +144,15 @@ def fetch_flight_offers(
                 "stops": outbound["stops"],
                 "price": float(itinerary["price"]),
                 "currency": response.get("currency", CURRENCY),
-            })
+            }
+            inbound = itinerary.get("inbound")
+            if inbound:
+                back_minutes = inbound["durationSeconds"] // 60
+                offer["return_route"] = "-".join(inbound["route"])
+                offer["return_departure"] = inbound["departureTime"]
+                offer["return_duration"] = f"PT{back_minutes // 60}H{back_minutes % 60}M"
+                offer["return_stops"] = inbound["stops"]
+            offers.append(offer)
         offers.sort(key=lambda offer: offer["price"])
         if not offers:
             raise ValueError("no flight offers returned")
@@ -139,7 +162,8 @@ def fetch_flight_offers(
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
             "departure_date": day.isoformat(),
-            "adults": adults,
+            "return_date": return_day.isoformat() if return_day else None,
+            "travelers": adults + children + infants,
             "offers": offers[:MAX_RESULTS],
         })
     except Exception as error:
@@ -153,7 +177,8 @@ def fetch_flight_offers(
         "origin": origin.strip().upper()[:3],
         "destination": destination.strip().upper()[:3],
         "departure_date": departure_date,
-        "offers": _mock_flights(origin, destination, adults, max_stops),
+        "return_date": return_date or None,
+        "offers": _mock_flights(adults + children, max_stops, bool(return_date.strip())),
     })
 
 
@@ -164,24 +189,32 @@ def fetch_hotel_properties(
     nights: int,
     price_ceiling: float,
     adults: int = 1,
+    children_ages: str = "",
     min_stars: int = 0,
 ) -> str:
     """Search hotels in a destination city for a stay starting on checkin_date (YYYY-MM-DD).
     Use the full city name for destination (e.g. 'Tokyo'), not an airport code.
     nights is the length of the stay, price_ceiling is the maximum total price for all nights,
-    adults is the number of travelers, and min_stars is the minimum star rating (0 means any).
+    adults is the number of adult travelers, children_ages is a dash-separated list of the
+    children's ages (e.g. '8-10', empty if none), and min_stars is the minimum star rating
+    (0 means any).
     Returns a JSON string with the cheapest hotels including name, star rating and total stay price."""
     try:
         checkin = date.fromisoformat(checkin_date.strip())
         checkout = checkin + timedelta(days=nights)
-        text = _call_mcp_tool(TRIVAGO_URL, "trivago-accommodation-search", {
+        arguments = {
             "query": destination.strip(),
             "arrival": checkin.isoformat(),
             "departure": checkout.isoformat(),
             "currency": CURRENCY,
             "adults": adults,
             "rooms": math.ceil(adults / 2),
-        }, HOTEL_TIMEOUT)
+        }
+        ages = [age for age in children_ages.replace(",", "-").split("-") if age.strip()]
+        if ages:
+            arguments["children"] = len(ages)
+            arguments["children_ages"] = "-".join(age.strip() for age in ages)
+        text = _call_mcp_tool(TRIVAGO_URL, "trivago-accommodation-search", arguments, HOTEL_TIMEOUT)
 
         # The server wraps its JSON in extra text, including a "system_message" field with
         # instructions aimed at the reader. It is untrusted data: only the hotel list is used.

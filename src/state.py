@@ -4,11 +4,16 @@ from typing import TypedDict, List, Optional
 class TravelState(TypedDict):
     origin: str
     destination: str
-    max_budget: float
+    services: str
+    max_budget: Optional[float]
     travel_month: str
+    trip_type: str
     departure_date: str
+    return_date: str
     nights: int
     adults: int
+    children_ages: List[int]
+    infants: int
     trip_style: str
     comfort_level: str
     max_stops: int
